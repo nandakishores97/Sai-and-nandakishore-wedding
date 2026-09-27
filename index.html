@@ -4,13 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Nandakishore &amp; Sai Priya — RSVP</title>
-<meta name="description" content="Wedding · Monday 14 December 2026, Thrissur. Reception · Tuesday 15 December 2026, Kochi. Please RSVP here.">
+<meta name="description" content="Nandakishore &amp; Sai Priya are getting married. Please RSVP here.">
 <meta name="theme-color" content="#163832">
 <!-- Link preview for WhatsApp / iMessage / social. Image must be an absolute
      URL, so og-image.jpg has to sit in the root of the GitHub repo. -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="Nandakishore &amp; Sai Priya — please RSVP">
-<meta property="og:description" content="Wedding · 14 Dec, Thrissur  ·  Reception · 15 Dec, Kochi">
+<meta property="og:description" content="We'd love to have you with us. Please RSVP here.">
 <meta property="og:url" content="https://nandakishores97.github.io/Sai-and-nandakishore-wedding/">
 <meta property="og:image" content="https://nandakishores97.github.io/Sai-and-nandakishore-wedding/og-image.jpg">
 <meta property="og:image:width" content="1200">
@@ -233,10 +233,6 @@
   .confirm-summary{margin:12px 0 0;padding:0;list-style:none;font-size:0.95rem;color:var(--gold-pale);}
   .confirm-summary li{margin:2px 0;}
   .confirm-summary b{color:var(--ivory);font-weight:600;}
-  .landing-events{list-style:none;padding:0;margin:0 0 26px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
-  .landing-events li{display:flex;gap:12px;align-items:baseline;padding:10px 0;font-size:0.95rem;color:var(--ink-soft);}
-  .landing-events li + li{border-top:1px solid var(--line);}
-  .landing-events .ev{font-family:'Cormorant Garamond',serif;font-size:1.2rem;font-weight:600;color:var(--teal);min-width:88px;}
   /* Welcome photo: arched frame (a nod to a temple doorway) with a thin gold
      inner line. object-position is tuned per photo so both faces sit in
      the upper-middle of the arch. */
@@ -456,7 +452,7 @@
 
 // Shown in small print at the bottom of the welcome page, so it's easy to
 // tell whether a phone is showing the latest upload or a cached older copy.
-const SITE_VERSION = 'v25.09-c';
+const SITE_VERSION = 'v27.09-a';
 
 const DEFAULT_SETTINGS = {
   coupleNames: "Nandakishore & Sai Priya",
@@ -899,13 +895,9 @@ function eventCity(venue, district){
   return parts.length ? parts[parts.length - 1] : (district || '');
 }
 
-function landingEventsHtml(){
-  const s = state.settings;
-  const rows = [];
-  if(s.weddingDate) rows.push(`<li><span class="ev">Wedding</span><span>${escapeHtml(shortDate(s.weddingDate))} · ${escapeHtml(eventCity(s.weddingVenue, s.weddingDistrict))}</span></li>`);
-  if(s.receptionDate) rows.push(`<li><span class="ev">Reception</span><span>${escapeHtml(shortDate(s.receptionDate))} · ${escapeHtml(eventCity(s.receptionVenue, s.receptionDistrict))}</span></li>`);
-  return rows.length ? `<ul class="landing-events">${rows.join('')}</ul>` : '';
-}
+// Event dates and venues are deliberately not shown on the welcome screen:
+// not every guest is invited to both events, so each guest only sees the
+// events they're invited to, after they find their name.
 
 // Couple photo on the welcome screen. Served straight from the GitHub repo
 // (couple.jpg next to index.html) rather than through Drive/Apps Script, so
@@ -933,7 +925,6 @@ function renderGuestFlow(app){
     if(state.restoringMe){
       html += `<div class="restore-note"><span class="spinner spinner-sm"></span>Welcome back${state.remembered && state.remembered.name ? ', ' + escapeHtml(state.remembered.name) : ''} — opening your RSVP…</div>`;
     }
-    html += landingEventsHtml();
   }
 
   if(state.submittedFor){
@@ -985,7 +976,7 @@ function renderGuestFlow(app){
     renderSearchResults();
   });
   // Autofocus only where there's a physical keyboard — on phones it pops
-  // the on-screen keyboard over the welcome message and dates.
+  // the on-screen keyboard over the welcome message.
   if(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches) input.focus();
   renderSearchResults();
   document.getElementById('manualBtn').addEventListener('click', () => {
