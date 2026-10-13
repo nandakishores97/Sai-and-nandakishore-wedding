@@ -452,7 +452,7 @@
 
 // Shown in small print at the bottom of the welcome page, so it's easy to
 // tell whether a phone is showing the latest upload or a cached older copy.
-const SITE_VERSION = 'v13.10-b';
+const SITE_VERSION = 'v13.10-c';
 
 const DEFAULT_SETTINGS = {
   coupleNames: "Nandakishore & Sai Priya",
@@ -1148,7 +1148,7 @@ function eventCardHtml(ev, opts){
       </label>
       <div class="event-details" id="${prefix}Details" ${opts.checked ? '' : 'hidden'}>
         <div class="field">
-          <label for="${prefix}Count">How many, including you?</label>
+          <label for="${prefix}Count">How many people should we expect from your family, including you?</label>
           <select id="${prefix}Count">${countOptions(count)}</select>
         </div>
         <label>${ev === 'wedding' ? 'Guest names' : 'Guest names &amp; food preference'}</label>
