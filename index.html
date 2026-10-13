@@ -452,7 +452,7 @@
 
 // Shown in small print at the bottom of the welcome page, so it's easy to
 // tell whether a phone is showing the latest upload or a cached older copy.
-const SITE_VERSION = 'v27.09-a';
+const SITE_VERSION = 'v13.10-a';
 
 const DEFAULT_SETTINGS = {
   coupleNames: "Nandakishore & Sai Priya",
@@ -959,7 +959,7 @@ function renderGuestFlow(app){
   html += `
     <div class="field">
       <label for="searchInput">Find your name to RSVP</label>
-      <input type="text" id="searchInput" placeholder="Type your name or phone number" value="${escapeHtml(state.searchTerm)}" autocomplete="off">
+      <input type="text" id="searchInput" placeholder="Type your phone number" value="${escapeHtml(state.searchTerm)}" autocomplete="off">
     </div>
     <div id="searchResults"></div>
     <div class="manual-cta">
