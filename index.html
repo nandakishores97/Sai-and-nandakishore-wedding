@@ -426,6 +426,15 @@
   .edit-check{font-size:0.78rem;white-space:nowrap;}
   .editing-row .form-error{margin-top:6px;}
   .merge-panel .field{margin-bottom:10px;}
+  /* Phone number with country code */
+  .phone-row{display:flex;gap:8px;align-items:stretch;}
+  .phone-row select.cc-select{flex:0 0 auto;width:118px;padding-left:10px;padding-right:6px;}
+  .phone-row input{flex:1 1 auto;min-width:0;}
+  .edit-phone{display:flex;gap:4px;margin-bottom:4px;}
+  .edit-phone select{width:74px;padding:6px 4px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:0.8rem;background:#fff;}
+  .alt-phone{display:block;font-size:0.78rem;color:var(--ink-soft);}
+  .help-link{display:inline-block;margin-top:14px;font-size:0.88rem;color:var(--teal);font-weight:600;}
+  .backend-note{background:#FBEDEF;border:1px solid var(--maroon);border-radius:var(--radius);padding:10px 14px;font-size:0.88rem;margin-bottom:16px;}
   /* Duplicate phone numbers (admin) */
   .dup-card{border-color:var(--gold);}
   .dup-group{border-top:1px solid var(--line);padding:12px 0 4px;}
@@ -466,7 +475,7 @@
 
 // Shown in small print at the bottom of the welcome page, so it's easy to
 // tell whether a phone is showing the latest upload or a cached older copy.
-const SITE_VERSION = 'v13.10-d';
+const SITE_VERSION = 'v13.10-e';
 
 const DEFAULT_SETTINGS = {
   coupleNames: "Nandakishore & Sai Priya",
@@ -596,6 +605,7 @@ async function loadAdminData(){
     const data = await withRetry(() => apiPost({ action: 'adminData', passcode: state.adminPasscode }));
     state.guestList = data.guestList || [];
     state.responses = data.responses || {};
+    state.backendVersion = Number(data.backendVersion) || 1;
     state.apiLoadFailed = false;
   }catch(e){
     console.error('Failed to load admin data:', e);
@@ -659,20 +669,101 @@ function newId(){
   return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 }
 
-// One phone number = one invite. Helpers for spotting numbers that are on
-// the guest list more than once. Only meaningful where full numbers are
-// loaded (the admin view); public visitors only ever hold the last 4 digits.
+// ---------- phone numbers ----------
+// Indian numbers are stored as plain 10 digits (as they always have been);
+// other countries as "+<code> <number>". The backend compares the last 10
+// digits of whatever it's given, so both forms verify correctly.
+const COUNTRY_CODES = [
+  ['91','India'], ['971','UAE'], ['966','Saudi Arabia'], ['974','Qatar'], ['965','Kuwait'],
+  ['968','Oman'], ['973','Bahrain'], ['1','USA / Canada'], ['44','UK'], ['61','Australia'],
+  ['64','New Zealand'], ['65','Singapore'], ['60','Malaysia'], ['353','Ireland'], ['49','Germany'],
+  ['33','France'], ['31','Netherlands'], ['41','Switzerland'], ['46','Sweden'], ['47','Norway'],
+  ['45','Denmark'], ['39','Italy'], ['81','Japan'], ['960','Maldives'], ['94','Sri Lanka'], ['977','Nepal']
+];
+// Who guests can message when their number isn't accepted.
+const HELP_WHATSAPP = '919446049908';
+
+function phoneKey(p){ return String(p || '').replace(/\D/g, '').slice(-10); }
+function isPlausiblePhone(p){ const n = String(p || '').replace(/\D/g, '').length; return n >= 8 && n <= 15; }
+
+// Splits a stored number into { cc, local } for prefilling an input.
+function splitStoredPhone(p){
+  const raw = String(p || '').trim();
+  const d = raw.replace(/\D/g, '');
+  if(!d) return { cc: '91', local: '' };
+  if(raw.startsWith('+')){
+    const match = COUNTRY_CODES.map(c => c[0]).filter(c => d.startsWith(c)).sort((a, b) => b.length - a.length)[0];
+    if(match) return { cc: match, local: d.slice(match.length) };
+  }
+  if(d.length === 12 && d.startsWith('91')) return { cc: '91', local: d.slice(2) };
+  return { cc: '91', local: d };
+}
+
+// Validates a code + typed number and returns the value to store/send.
+function normalisePhone(cc, typed){
+  let d = String(typed || '').replace(/\D/g, '');
+  if(!d) return { error: 'Please enter a phone number.' };
+  if(cc === '91'){
+    if(d.length === 12 && d.startsWith('91')) d = d.slice(2);
+    if(d.length === 11 && d[0] === '0') d = d.slice(1);
+    if(d.length !== 10) return { error: 'Please enter a valid 10-digit mobile number.' };
+    return { value: d };
+  }
+  d = d.replace(/^0+/, '');
+  if(d.length < 6 || d.length > 12) return { error: 'Please enter a valid phone number for +' + cc + '.' };
+  return { value: '+' + cc + ' ' + d };
+}
+function readPhoneInput(id){
+  const ccEl = document.getElementById(id + 'Cc');
+  const el = document.getElementById(id);
+  return normalisePhone(ccEl ? ccEl.value : '91', el ? el.value : '');
+}
+
+function ccOptionsHtml(selected){
+  return COUNTRY_CODES.map(([c, n]) => `<option value="${c}" ${c === (selected || '91') ? 'selected' : ''}>+${c} ${escapeHtml(n)}</option>`).join('');
+}
+// A country-code picker plus number box. opts: value (stored number to
+// prefill), placeholder, attrs (extra input attributes), compact (admin table).
+function phoneInputHtml(id, opts){
+  opts = opts || {};
+  const parts = splitStoredPhone(opts.value);
+  const ph = opts.placeholder || 'Phone number';
+  if(opts.compact){
+    return `<div class="edit-phone"><select id="${id}Cc" aria-label="Country code">${COUNTRY_CODES.map(([c]) => `<option value="${c}" ${c === parts.cc ? 'selected' : ''}>+${c}</option>`).join('')}</select><input type="tel" class="edit-input" id="${id}" value="${escapeHtml(parts.local)}" inputmode="numeric" maxlength="15" placeholder="${escapeHtml(ph)}"></div>`;
+  }
+  return `<div class="phone-row"><select id="${id}Cc" class="cc-select" aria-label="Country code">${ccOptionsHtml(parts.cc)}</select><input type="tel" id="${id}" value="${escapeHtml(parts.local)}" placeholder="${escapeHtml(ph)}" inputmode="numeric" maxlength="15" ${opts.attrs || ''}></div>`;
+}
+
+function whatsappHelpUrl(guestName){
+  const msg = guestName
+    ? `Hi! I'm trying to RSVP for "${guestName}" on the wedding website, but my phone number isn't being accepted.`
+    : `Hi! I'm trying to RSVP on the wedding website, but I can't find my invite.`;
+  return `https://wa.me/${HELP_WHATSAPP}?text=${encodeURIComponent(msg)}`;
+}
+
+// One phone number = one invite. A household can have a second number
+// (altPhone); either one counts. Full numbers are only loaded in the admin
+// view — public visitors only ever hold the last 4 digits.
+function phoneKeysOf(g){
+  const keys = [phoneKey(g && g.phone), phoneKey(g && g.altPhone)].filter(k => k.length >= 8);
+  return keys.filter((k, i) => keys.indexOf(k) === i);
+}
 function phoneDigitsOf(g){ return String((g && g.phone) || '').replace(/\D/g, ''); }
+function last4sOf(g){
+  return [g.phoneLast4 || phoneDigitsOf(g).slice(-4), g.altPhoneLast4 || String(g.altPhone || '').replace(/\D/g, '').slice(-4)].filter(Boolean);
+}
 function guestWithPhone(phone, exceptId){
-  return state.guestList.find(g => g.id !== exceptId && phoneDigitsOf(g) === phone) || null;
+  const k = phoneKey(phone);
+  return state.guestList.find(g => g.id !== exceptId && phoneKeysOf(g).includes(k)) || null;
 }
 function duplicatePhoneGroups(){
-  const byPhone = {};
-  state.guestList.forEach(g => {
-    const d = phoneDigitsOf(g);
-    if(d.length === 10) (byPhone[d] = byPhone[d] || []).push(g);
+  const byKey = {};
+  state.guestList.forEach(g => phoneKeysOf(g).forEach(k => { (byKey[k] = byKey[k] || []).push(g); }));
+  return Object.keys(byKey).filter(k => byKey[k].length > 1).map(k => {
+    const guests = byKey[k];
+    const shown = guests.map(g => [g.phone, g.altPhone].find(p => phoneKey(p) === k)).find(Boolean) || k;
+    return { phone: k, label: String(shown), guests };
   });
-  return Object.keys(byPhone).filter(k => byPhone[k].length > 1).map(phone => ({ phone, guests: byPhone[phone] }));
 }
 function escapeHtml(str){
   return String(str ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1039,13 +1130,12 @@ function renderSearchResults(){
     // Only the last four digits are sent to the browser, so phone search
     // matches against those (a guest typing their full number still works,
     // since its last four will match).
-    const last4 = g.phoneLast4 || '';
-    const phoneMatch = digits.length >= 3 && last4 && (last4.includes(digits) || digits.slice(-4) === last4);
+    const phoneMatch = digits.length >= 3 && last4sOf(g).some(last4 => last4.includes(digits) || digits.slice(-4) === last4);
     return nameMatch || phoneMatch;
   }).slice(0, 8);
 
   if(matches.length === 0){
-    box.innerHTML = `<p class="search-empty">No match yet — keep typing, or use "Can't find your name?" below.</p>`;
+    box.innerHTML = `<p class="search-empty">No match yet — keep typing, or use "Can't find your name?" below. Still stuck? <a href="${whatsappHelpUrl('')}" target="_blank" rel="noopener">Message us on WhatsApp</a>.</p>`;
     return;
   }
   box.innerHTML = matches.map(g => {
@@ -1063,6 +1153,7 @@ function renderSearchResults(){
       const guest = state.guestList.find(g => g.id === el.dataset.id);
       if(guest && guestHasPhone(guest)){
         state.pendingVerifyId = el.dataset.id;
+        state.verifyTyped = '';
         state.verifyError = '';
       } else {
         // No usable phone on file for this record — nothing to verify against,
@@ -1080,13 +1171,14 @@ function renderPhoneVerify(){
   return `
     <div class="tag">Confirming it's you</div>
     <div class="card">
-      <p>To protect ${escapeHtml(guest.name)}'s RSVP from being changed by someone else, please enter the 10-digit phone number we have on file for this household.</p>
+      <p>To protect ${escapeHtml(guest.name)}'s RSVP from being changed by someone else, please enter the phone number we have on file for this household.</p>
       <div class="field">
         <label for="verifyPhone">Phone number</label>
-        <input type="tel" id="verifyPhone" placeholder="10-digit phone number" autocomplete="off" inputmode="numeric" maxlength="10">
+        ${phoneInputHtml('verifyPhone', { value: state.verifyTyped || '', placeholder: 'Phone number', attrs: 'autocomplete="off"' })}
       </div>
       ${state.verifyError ? `<div class="form-error" role="alert">${escapeHtml(state.verifyError)}</div>` : ''}
       <button class="btn" id="verifyBtn">Confirm</button>
+      <a class="help-link" href="${whatsappHelpUrl(guest.name)}" target="_blank" rel="noopener">${state.verifyError ? 'Number not working? Message us on WhatsApp' : 'Need help? Message us on WhatsApp'}</a>
     </div>
     <button class="muted-link" id="verifyBackBtn">Back to search</button>
   `;
@@ -1100,12 +1192,14 @@ function bindPhoneVerifyEvents(){
   document.getElementById('verifyBtn').addEventListener('click', async () => {
     const guest = state.guestList.find(g => g.id === state.pendingVerifyId);
     if(!guest){ state.pendingVerifyId = null; render(); return; }
-    const entered = (document.getElementById('verifyPhone').value || '').replace(/\D/g,'');
-    if(entered.length !== 10){
-      state.verifyError = "Please enter the full 10-digit number.";
+    const parsed = readPhoneInput('verifyPhone');
+    state.verifyTyped = parsed.value || '';
+    if(parsed.error){
+      state.verifyError = parsed.error;
       render();
       return;
     }
+    const entered = parsed.value;
     const btn = document.getElementById('verifyBtn');
     btn.innerHTML = '<span class="spinner spinner-sm"></span>Checking…';
     btn.disabled = true;
@@ -1137,7 +1231,7 @@ function bindPhoneVerifyEvents(){
         state.pendingVerifyId = null;
         render();
       } else {
-        state.verifyError = "That doesn't match the number we have on file — please check and try again.";
+        state.verifyError = "That doesn't match the number we have on file — please check the country code and number, and try again.";
         render();
       }
     }catch(err){
@@ -1204,8 +1298,8 @@ function renderRsvpForm(){
       <div class="tag">New RSVP</div>
       <div class="card">
         <div class="field"><label for="mName">Your name / household</label><input type="text" id="mName" placeholder="e.g. Ramesh &amp; family" autocomplete="name"></div>
-        <div class="field"><label for="mPhone">Phone number</label><input type="tel" id="mPhone" placeholder="10-digit phone number" inputmode="numeric" maxlength="10" autocomplete="tel-national"></div>
-        <div class="field"><label for="mPhoneConfirm">Confirm phone number</label><input type="tel" id="mPhoneConfirm" placeholder="Re-enter the same number" inputmode="numeric" maxlength="10" autocomplete="off"></div>
+        <div class="field"><label for="mPhone">Phone number</label>${phoneInputHtml('mPhone', { placeholder: 'Phone number', attrs: 'autocomplete="tel-national"' })}</div>
+        <div class="field"><label for="mPhoneConfirm">Confirm phone number</label><input type="tel" id="mPhoneConfirm" placeholder="Re-enter the same number" inputmode="numeric" maxlength="15" autocomplete="off"></div>
         <p class="helptext" style="margin-top:-6px">We'll use this to make sure only you can come back and edit this RSVP later, so please double check it's correct.</p>
         <div id="existingInvite"></div>
         ${sideSelectorHtml('')}
@@ -1267,9 +1361,10 @@ function setEventOpen(prefix, open){
 // phone check — which also hands back that guest's record, exactly as if
 // they'd found their name and verified.
 async function findExistingInviteByPhone(phone){
-  const last4 = phone.slice(-4);
-  const candidates = state.guestList.filter(g => (g.phoneLast4 || phoneDigitsOf(g).slice(-4)) === last4);
-  for(const g of candidates){
+  const last4 = phone.replace(/\D/g, '').slice(-4);
+  const candidates = state.guestList.filter(g => last4sOf(g).includes(last4));
+  // Checked in parallel — each one is a round trip to the Apps Script.
+  const results = await Promise.all(candidates.slice(0, 8).map(async g => {
     try{
       const res = await fetch(API_URL, {
         method: 'POST',
@@ -1277,12 +1372,13 @@ async function findExistingInviteByPhone(phone){
         body: JSON.stringify({ action: 'verifyGuest', id: g.id, phone })
       });
       const data = await res.json();
-      if(data && data.ok && data.guest) return { phone, guest: data.guest, response: data.response || null };
+      return (data && data.ok && data.guest) ? { phone, guest: data.guest, response: data.response || null } : null;
     }catch(err){
       console.warn('Existing-invite check failed:', err);
+      return null;
     }
-  }
-  return null;
+  }));
+  return results.find(Boolean) || null;
 }
 
 function showExistingInviteNotice(found){
@@ -1316,13 +1412,15 @@ function openExistingInvite(found){
 function bindExistingInviteCheck(){
   const a = document.getElementById('mPhone');
   const b = document.getElementById('mPhoneConfirm');
+  const cc = document.getElementById('mPhoneCc');
   if(!a || !b) return;
   state.existingInvite = null;
   let seq = 0;
   const check = async () => {
-    const p1 = a.value.replace(/\D/g, ''), p2 = b.value.replace(/\D/g, '');
-    const phone = p1.length === 10 ? p1 : '';
-    if(!phone || (p2.length === 10 && p2 !== p1)){ state.existingInvite = null; showExistingInviteNotice(null); return; }
+    const p1 = readPhoneInput('mPhone');
+    const p2 = normalisePhone(cc ? cc.value : '91', b.value);
+    const phone = p1.value || '';
+    if(!phone || (p2.value && p2.value !== phone)){ state.existingInvite = null; showExistingInviteNotice(null); return; }
     if(state.existingInvite && state.existingInvite.phone === phone) return;
     const mine = ++seq;
     const found = await findExistingInviteByPhone(phone);
@@ -1332,6 +1430,7 @@ function bindExistingInviteCheck(){
   };
   a.addEventListener('input', check);
   b.addEventListener('input', check);
+  if(cc) cc.addEventListener('change', check);
 }
 
 function bindRsvpFormEvents(){
@@ -1423,10 +1522,12 @@ async function submitRsvp(){
   if(state.manualEntry){
     name = document.getElementById('mName').value.trim();
     if(!name){ showFormError('Please enter your name.', 'mName'); return; }
-    const phoneDigits = document.getElementById('mPhone').value.replace(/\D/g,'');
-    const phoneConfirmDigits = document.getElementById('mPhoneConfirm').value.replace(/\D/g,'');
-    if(phoneDigits.length !== 10){ showFormError('Please enter a valid 10-digit phone number.', 'mPhone'); return; }
-    if(phoneDigits !== phoneConfirmDigits){ showFormError("The two phone numbers don't match — please check and re-enter.", 'mPhoneConfirm'); return; }
+    const parsedPhone = readPhoneInput('mPhone');
+    if(parsedPhone.error){ showFormError(parsedPhone.error, 'mPhone'); return; }
+    const phoneDigits = parsedPhone.value;
+    const ccEl = document.getElementById('mPhoneCc');
+    const parsedConfirm = normalisePhone(ccEl ? ccEl.value : '91', document.getElementById('mPhoneConfirm').value);
+    if(parsedConfirm.value !== phoneDigits){ showFormError("The two phone numbers don't match — please check and re-enter.", 'mPhoneConfirm'); return; }
     phoneDigitsForNewGuest = phoneDigits;
     // Final check that this number isn't already on the guest list.
     let found = state.existingInvite && state.existingInvite.phone === phoneDigits ? state.existingInvite : null;
@@ -1481,13 +1582,13 @@ async function submitRsvp(){
       weddingDefaultCount: weddingCount, receptionDefaultCount: receptionCount,
       unmatched: true
     };
-    state.guestList.push(Object.assign({ hasPhone: true, phoneLast4: phoneDigitsForNewGuest.slice(-4) }, newGuestRecord));
+    state.guestList.push(Object.assign({ hasPhone: true, phoneLast4: phoneDigitsForNewGuest.replace(/\D/g, '').slice(-4) }, newGuestRecord));
     state.fullGuests[id] = state.guestList[state.guestList.length - 1];
   } else {
     id = state.selectedGuestId;
     const g = state.guestList.find(x => x.id === id);
     name = g.name;
-    if(guestHasPhone(g) && !/^\d{10}$/.test(state.verifiedPhone || '')){
+    if(guestHasPhone(g) && !isPlausiblePhone(state.verifiedPhone)){
       // Shouldn't happen, but if it does, ask for the number instead of
       // letting the server reject the save.
       state.pendingVerifyId = id;
@@ -1570,7 +1671,7 @@ function forgetMe(){
 function readMe(){
   try{
     const m = JSON.parse(localStorage.getItem(ME_KEY) || 'null');
-    return (m && m.id && /^\d{10}$/.test(String(m.phone || ''))) ? m : null;
+    return (m && m.id && isPlausiblePhone(m.phone)) ? m : null;
   }catch(e){ return null; }
 }
 
@@ -1918,7 +2019,8 @@ function bindConfirmationEvents(){
     state.guestList = state.guestList.map(g => {
       if(!('phone' in g)) return g;
       const d = String(g.phone || '').replace(/\D/g, '');
-      return { id: g.id, name: g.name, phoneLast4: d.slice(-4), hasPhone: d.length >= 10,
+      const ad = String(g.altPhone || '').replace(/\D/g, '');
+      return { id: g.id, name: g.name, phoneLast4: d.slice(-4), altPhoneLast4: ad.slice(-4), hasPhone: d.length >= 10,
         weddingInvited: g.weddingInvited, receptionInvited: g.receptionInvited,
         weddingDefaultCount: g.weddingDefaultCount, receptionDefaultCount: g.receptionDefaultCount, responded: true };
     });
@@ -2163,7 +2265,7 @@ function renderDashboard(body){
 }
 
 function exportCsv(){
-  const header = ['Household','Phone','Side','Invited Wedding','Invited Reception','Responded',
+  const header = ['Household','Phone','Second phone','Side','Invited Wedding','Invited Reception','Responded',
     'Wedding Attending','Wedding Count','Wedding Guests (Name: Diet)','Wedding Veg','Wedding Non-veg',
     'Reception Attending','Reception Count','Reception Guests (Name: Diet)','Reception Veg','Reception Non-veg'];
   const formatAttendees = list => (list||[]).map(a => `${a.name}: ${a.dietary}`).join('; ');
@@ -2172,7 +2274,7 @@ function exportCsv(){
   const rows = state.guestList.map(g => {
     const r = state.responses[g.id];
     return [
-      g.name, g.phone||'', r?sideLabel(r.side):'',
+      g.name, g.phone||'', g.altPhone||'', r?sideLabel(r.side):'',
       g.weddingInvited?'Y':'N', g.receptionInvited?'Y':'N',
       r?'Y':'N',
       r?(r.weddingAttending?'Y':'N'):'', r?r.weddingCount:'', r?formatAttendees(r.weddingAttendees):'',
@@ -2200,13 +2302,13 @@ function exportCsv(){
 
 function renderGuestsAdmin(body){
   body.innerHTML = `
+    ${(state.backendVersion || 1) < 2 ? `<div class="backend-note"><strong>One step left:</strong> second phone numbers won't be saved until the updated Apps Script is pasted into your Google Sheet and redeployed.</div>` : ''}
     <div id="dupCardWrap"></div>
     <div class="card">
       <h3>Add a household</h3>
-      <div class="row">
-        <div class="field"><label for="gName">Household name</label><input type="text" id="gName"></div>
-        <div class="field"><label for="gPhone">Phone (10 digits, required)</label><input type="tel" id="gPhone" inputmode="numeric" maxlength="10" placeholder="10-digit phone number"></div>
-      </div>
+      <div class="field"><label for="gName">Household name</label><input type="text" id="gName"></div>
+      <div class="field"><label for="gPhone">Phone (required)</label>${phoneInputHtml('gPhone', { placeholder: 'Phone number' })}</div>
+      <div class="field"><label for="gAlt">Second phone (optional)</label>${phoneInputHtml('gAlt', { placeholder: 'Another number for this household' })}</div>
       <div class="row">
         <div class="checkbox-row"><input type="checkbox" id="gWed" checked><label for="gWed">Wedding</label></div>
         <div class="field"><input type="number" id="gWedCount" min="0" value="1" placeholder="Count"></div>
@@ -2220,7 +2322,7 @@ function renderGuestsAdmin(body){
     </div>
     <div class="card">
       <h3>Import guest list</h3>
-      <p class="helptext">Columns, in order: Name, Phone, Wedding (Y/N), Wedding Count, Reception (Y/N), Reception Count. Re-importing an updated file is safe — matching phone numbers get updated, not duplicated.</p>
+      <p class="helptext">Columns, in order: Name, Phone, Wedding (Y/N), Wedding Count, Reception (Y/N), Reception Count, Second phone (optional). Write overseas numbers with their code, e.g. +971 501234567. Re-importing an updated file is safe — matching phone numbers get updated, not duplicated.</p>
       <button class="btn secondary small" id="templateBtn" type="button">Download Excel template</button>
       <div class="field" style="margin-top:14px">
         <label for="excelFile">Upload .xlsx file</label>
@@ -2253,15 +2355,26 @@ Priya, 9847099999, N, 0, Y, 1"></textarea>
     // A 10-digit phone is what lets this guest verify their identity later
     // and have their RSVP prefill when they return — a record without one
     // can't be protected or reopened, so don't allow creating them.
-    const phoneDigits = document.getElementById('gPhone').value.replace(/\D/g,'');
-    if(phoneDigits.length !== 10){ errEl.textContent = 'Enter a valid 10-digit phone number — guests need it to open and edit their RSVP.'; return; }
-    const clash = guestWithPhone(phoneDigits, null);
-    if(clash){ errEl.textContent = `That number is already on the list for "${clash.name}". Each number should have one invite — edit that household instead.`; return; }
+    const parsed = readPhoneInput('gPhone');
+    if(parsed.error){ errEl.textContent = parsed.error + ' Guests need it to open and edit their RSVP.'; return; }
+    const phoneDigits = parsed.value;
+    let altPhone = '';
+    if(document.getElementById('gAlt').value.trim()){
+      const alt = readPhoneInput('gAlt');
+      if(alt.error){ errEl.textContent = 'Second phone: ' + alt.error; return; }
+      if(phoneKey(alt.value) === phoneKey(phoneDigits)){ errEl.textContent = 'The second phone is the same as the first.'; return; }
+      altPhone = alt.value;
+    }
+    for(const num of [phoneDigits, altPhone].filter(Boolean)){
+      const clash = guestWithPhone(num, null);
+      if(clash){ errEl.textContent = `${num} is already on the list for "${clash.name}". Each number should have one invite — edit that household instead.`; return; }
+    }
     errEl.textContent = '';
     const guest = {
       id: newId(),
       name,
       phone: phoneDigits,
+      altPhone,
       weddingInvited: document.getElementById('gWed').checked,
       weddingDefaultCount: parseInt(document.getElementById('gWedCount').value,10)||0,
       receptionInvited: document.getElementById('gRec').checked,
@@ -2332,9 +2445,9 @@ Priya, 9847099999, N, 0, Y, 1"></textarea>
       await loadXlsx();
       const wb = XLSX.utils.book_new();
       const aoa = [
-        ['Name','Phone','Wedding (Y/N)','Wedding Count','Reception (Y/N)','Reception Count'],
-        ['Ramesh & Family','9847012345','Y',4,'Y',4],
-        ['Priya','9847099999','N',0,'Y',1]
+        ['Name','Phone','Wedding (Y/N)','Wedding Count','Reception (Y/N)','Reception Count','Second phone (optional)'],
+        ['Ramesh & Family','9847012345','Y',4,'Y',4,'9847055555'],
+        ['Priya','+971 501234567','N',0,'Y',1,'']
       ];
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       XLSX.utils.book_append_sheet(wb, ws, 'Guests');
@@ -2361,7 +2474,7 @@ function renderGuestTable(){
     if(state.editingGuestId === g.id){
       return `<tr class="editing-row">
         <td><input type="text" class="edit-input" id="editName" value="${escapeHtml(g.name)}" placeholder="Household name"></td>
-        <td><input type="tel" class="edit-input" id="editPhone" value="${escapeHtml(g.phone||'')}" inputmode="numeric" maxlength="10" placeholder="10-digit phone"></td>
+        <td>${phoneInputHtml('editPhone', { value: g.phone, placeholder: 'Phone', compact: true })}${phoneInputHtml('editAlt', { value: g.altPhone, placeholder: '2nd phone (optional)', compact: true })}</td>
         <td class="num-cell">
           <label class="edit-check"><input type="checkbox" id="editWed" ${g.weddingInvited?'checked':''}> inv.</label>
           <input type="number" class="edit-input num" id="editWedCount" value="${g.weddingDefaultCount||0}" min="0" max="20">
@@ -2379,7 +2492,7 @@ function renderGuestTable(){
     }
     let rowsHtml = `<tr>
       <td>${escapeHtml(g.name)}${g.unmatched?' <span class="badge pending">unmatched</span>':''}</td>
-      <td>${escapeHtml(g.phone||'') || '<span class="badge pending">no phone</span>'}</td>
+      <td>${escapeHtml(g.phone||'') || '<span class="badge pending">no phone</span>'}${g.altPhone ? `<span class="alt-phone">also ${escapeHtml(g.altPhone)}</span>` : ''}</td>
       <td class="num-cell">${g.weddingInvited ? (r?(r.weddingAttending?r.weddingCount:'No'):'—') : '·'}</td>
       <td class="num-cell">${g.receptionInvited ? (r?(r.receptionAttending?r.receptionCount:'No'):'—') : '·'}</td>
       <td>${r ? '<span class="badge yes">Responded</span>' : '<span class="badge pending">Pending</span>'}</td>
@@ -2419,17 +2532,28 @@ function renderGuestTable(){
       if(!g) return;
       const errEl = document.getElementById('editRowError');
       const name = document.getElementById('editName').value.trim();
-      const phoneDigits = document.getElementById('editPhone').value.replace(/\D/g,'');
       if(!name){ errEl.textContent = 'Enter a household name.'; return; }
       // Same rule as adding a guest: without a valid phone this record
       // can't be verified or reopened by the guest later.
-      if(phoneDigits.length !== 10){ errEl.textContent = 'Enter a valid 10-digit phone number.'; return; }
-      const clash = guestWithPhone(phoneDigits, id);
-      if(clash){ errEl.textContent = `That number is already used by "${clash.name}" — each number should have one invite.`; return; }
+      const parsed = readPhoneInput('editPhone');
+      if(parsed.error){ errEl.textContent = parsed.error; return; }
+      const phoneDigits = parsed.value;
+      let altPhone = '';
+      if(document.getElementById('editAlt').value.trim()){
+        const alt = readPhoneInput('editAlt');
+        if(alt.error){ errEl.textContent = 'Second phone: ' + alt.error; return; }
+        if(phoneKey(alt.value) === phoneKey(phoneDigits)){ errEl.textContent = 'The second phone is the same as the first.'; return; }
+        altPhone = alt.value;
+      }
+      for(const num of [phoneDigits, altPhone].filter(Boolean)){
+        const clash = guestWithPhone(num, id);
+        if(clash){ errEl.textContent = `${num} is already used by "${clash.name}" — each number should have one invite.`; return; }
+      }
 
       const before = {...g};
       g.name = name;
       g.phone = phoneDigits;
+      g.altPhone = altPhone;
       g.weddingInvited = document.getElementById('editWed').checked;
       g.receptionInvited = document.getElementById('editRec').checked;
       g.weddingDefaultCount = parseInt(document.getElementById('editWedCount').value,10) || 0;
@@ -2531,7 +2655,7 @@ function renderDuplicatesCard(){
       <p class="helptext" style="margin-top:0">These numbers are on the list more than once. Each number should have one invite, so choose the entry to keep. The others are removed, and their invitations and RSVPs are combined into the one you keep — so a Wedding reply on one entry and a Reception reply on another both carry over. If two entries answered for the same event, the one you keep wins.</p>
       ${groups.map(grp => `
         <div class="dup-group">
-          <div class="dup-phone">${escapeHtml(grp.phone)}</div>
+          <div class="dup-phone">${escapeHtml(grp.label)}</div>
           ${grp.guests.map(g => {
             const r = state.responses[g.id];
             const invited = [g.weddingInvited ? 'Wedding' : '', g.receptionInvited ? 'Reception' : ''].filter(Boolean).join(' + ') || 'No events';
@@ -2610,6 +2734,13 @@ async function mergeDuplicateGroup(keepId, otherIds){
     keep.receptionInvited = keep.receptionInvited || !!movedResponse.receptionAttending;
   }
   keep.unmatched = false;
+  // Keep another entry's different number as this household's second phone,
+  // so the guest can still get in with whichever number they use.
+  if(!keep.altPhone){
+    const keepKey = phoneKey(keep.phone);
+    const extra = others.flatMap(g => [g.phone, g.altPhone]).find(p => p && phoneKey(p).length >= 8 && phoneKey(p) !== keepKey);
+    if(extra) keep.altPhone = extra;
+  }
 
   const removedResponses = others.filter(g => state.responses[g.id]).map(g => g.id);
   if(movedResponse) state.responses[keepId] = movedResponse;
@@ -2716,6 +2847,12 @@ async function performMerge(sourceId, targetId){
   const sourceResponse = state.responses[sourceId];
 
   const mergedResponse = sourceResponse ? { ...sourceResponse, id: targetId } : null;
+  // The guest RSVP'd from a number we didn't have — keep it as the
+  // household's second phone so it works for them next time too.
+  const srcKey = phoneKey(sourceGuest.phone);
+  if(srcKey.length >= 8 && !phoneKeysOf(targetGuest).includes(srcKey) && !targetGuest.altPhone){
+    targetGuest.altPhone = sourceGuest.phone;
+  }
   if(mergedResponse){
     state.responses[targetId] = mergedResponse;
     delete state.responses[sourceId];
