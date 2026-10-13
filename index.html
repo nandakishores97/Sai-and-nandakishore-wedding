@@ -426,6 +426,20 @@
   .edit-check{font-size:0.78rem;white-space:nowrap;}
   .editing-row .form-error{margin-top:6px;}
   .merge-panel .field{margin-bottom:10px;}
+  /* Duplicate phone numbers (admin) */
+  .dup-card{border-color:var(--gold);}
+  .dup-group{border-top:1px solid var(--line);padding:12px 0 4px;}
+  .dup-group:first-of-type{border-top:none;}
+  .dup-phone{font-weight:600;font-size:0.9rem;color:var(--teal);margin-bottom:6px;}
+  .dup-entry{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:8px 0;flex-wrap:wrap;}
+  .dup-entry + .dup-entry{border-top:1px dashed var(--line);}
+  .dup-entry .dup-info{flex:1 1 220px;min-width:0;}
+  .dup-entry .dup-meta{font-size:0.82rem;color:var(--ink-soft);}
+  .dup-warning{background:var(--gold-pale);border:1px solid var(--gold);border-radius:var(--radius);padding:10px 14px;font-size:0.9rem;margin-bottom:16px;}
+  /* "You're already on the list" notice on the manual RSVP form */
+  .existing-invite{background:var(--gold-pale);border:1px solid var(--gold);border-radius:var(--radius);padding:14px 16px;margin:4px 0 16px;}
+  .existing-invite p{margin:0 0 12px;}
+  .existing-invite .btn{margin:0;}
   .helptext{font-size:0.82rem;color:var(--ink-soft);margin-top:-8px;margin-bottom:16px;}
   .confirm-box{
     background:var(--teal);
@@ -452,7 +466,7 @@
 
 // Shown in small print at the bottom of the welcome page, so it's easy to
 // tell whether a phone is showing the latest upload or a cached older copy.
-const SITE_VERSION = 'v13.10-c';
+const SITE_VERSION = 'v13.10-d';
 
 const DEFAULT_SETTINGS = {
   coupleNames: "Nandakishore & Sai Priya",
@@ -643,6 +657,22 @@ function readPublicCache(){
 
 function newId(){
   return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+}
+
+// One phone number = one invite. Helpers for spotting numbers that are on
+// the guest list more than once. Only meaningful where full numbers are
+// loaded (the admin view); public visitors only ever hold the last 4 digits.
+function phoneDigitsOf(g){ return String((g && g.phone) || '').replace(/\D/g, ''); }
+function guestWithPhone(phone, exceptId){
+  return state.guestList.find(g => g.id !== exceptId && phoneDigitsOf(g) === phone) || null;
+}
+function duplicatePhoneGroups(){
+  const byPhone = {};
+  state.guestList.forEach(g => {
+    const d = phoneDigitsOf(g);
+    if(d.length === 10) (byPhone[d] = byPhone[d] || []).push(g);
+  });
+  return Object.keys(byPhone).filter(k => byPhone[k].length > 1).map(phone => ({ phone, guests: byPhone[phone] }));
 }
 function escapeHtml(str){
   return String(str ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1177,6 +1207,7 @@ function renderRsvpForm(){
         <div class="field"><label for="mPhone">Phone number</label><input type="tel" id="mPhone" placeholder="10-digit phone number" inputmode="numeric" maxlength="10" autocomplete="tel-national"></div>
         <div class="field"><label for="mPhoneConfirm">Confirm phone number</label><input type="tel" id="mPhoneConfirm" placeholder="Re-enter the same number" inputmode="numeric" maxlength="10" autocomplete="off"></div>
         <p class="helptext" style="margin-top:-6px">We'll use this to make sure only you can come back and edit this RSVP later, so please double check it's correct.</p>
+        <div id="existingInvite"></div>
         ${sideSelectorHtml('')}
       </div>`;
     events = eventCardHtml('wedding', { checked: false, count: 1 }) + eventCardHtml('reception', { checked: false, count: 1 });
@@ -1229,8 +1260,83 @@ function setEventOpen(prefix, open){
   if(chk) chk.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
+// One phone number = one invite. When someone on the "can't find your
+// name" form types a number that's already on the guest list, point them to
+// that invite instead of creating a second entry. The browser only holds the
+// last 4 digits, so each candidate is confirmed with the server's existing
+// phone check — which also hands back that guest's record, exactly as if
+// they'd found their name and verified.
+async function findExistingInviteByPhone(phone){
+  const last4 = phone.slice(-4);
+  const candidates = state.guestList.filter(g => (g.phoneLast4 || phoneDigitsOf(g).slice(-4)) === last4);
+  for(const g of candidates){
+    try{
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'verifyGuest', id: g.id, phone })
+      });
+      const data = await res.json();
+      if(data && data.ok && data.guest) return { phone, guest: data.guest, response: data.response || null };
+    }catch(err){
+      console.warn('Existing-invite check failed:', err);
+    }
+  }
+  return null;
+}
+
+function showExistingInviteNotice(found){
+  const box = document.getElementById('existingInvite');
+  if(!box) return;
+  if(!found){ box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="existing-invite" role="status">
+    <p><strong>You're already on our guest list</strong> as <b>${escapeHtml(found.guest.name)}</b>. Please RSVP on that invite so we don't count you twice.</p>
+    <button type="button" class="btn small" id="useExistingInvite">${found.response ? 'See my RSVP' : 'Continue to my invite'}</button>
+  </div>`;
+  document.getElementById('useExistingInvite').addEventListener('click', () => openExistingInvite(found));
+}
+
+function openExistingInvite(found){
+  state.existingInvite = null;
+  if(found.response){
+    showSummaryFor(found.guest, found.response, found.phone);
+  } else {
+    state.fullGuests[found.guest.id] = found.guest;
+    if(state.guestList.some(g => g.id === found.guest.id)) state.guestList = state.guestList.map(g => g.id === found.guest.id ? found.guest : g);
+    else state.guestList.push(found.guest);
+    state.selectedGuestId = found.guest.id;
+    state.verifiedPhone = found.phone;
+    state.pendingVerifyId = null;
+    state.manualEntry = false;
+  }
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function bindExistingInviteCheck(){
+  const a = document.getElementById('mPhone');
+  const b = document.getElementById('mPhoneConfirm');
+  if(!a || !b) return;
+  state.existingInvite = null;
+  let seq = 0;
+  const check = async () => {
+    const p1 = a.value.replace(/\D/g, ''), p2 = b.value.replace(/\D/g, '');
+    const phone = p1.length === 10 ? p1 : '';
+    if(!phone || (p2.length === 10 && p2 !== p1)){ state.existingInvite = null; showExistingInviteNotice(null); return; }
+    if(state.existingInvite && state.existingInvite.phone === phone) return;
+    const mine = ++seq;
+    const found = await findExistingInviteByPhone(phone);
+    if(mine !== seq) return; // number changed while we were checking
+    state.existingInvite = found ? found : { phone, guest: null };
+    showExistingInviteNotice(found);
+  };
+  a.addEventListener('input', check);
+  b.addEventListener('input', check);
+}
+
 function bindRsvpFormEvents(){
   bindAttendeeNameSync();
+  if(state.manualEntry) bindExistingInviteCheck();
   document.querySelectorAll('input[name="inviteSide"]').forEach(radio => {
     radio.addEventListener('change', prefetchInvites);
   });
@@ -1322,6 +1428,21 @@ async function submitRsvp(){
     if(phoneDigits.length !== 10){ showFormError('Please enter a valid 10-digit phone number.', 'mPhone'); return; }
     if(phoneDigits !== phoneConfirmDigits){ showFormError("The two phone numbers don't match — please check and re-enter.", 'mPhoneConfirm'); return; }
     phoneDigitsForNewGuest = phoneDigits;
+    // Final check that this number isn't already on the guest list.
+    let found = state.existingInvite && state.existingInvite.phone === phoneDigits ? state.existingInvite : null;
+    if(!found){
+      const btn = document.getElementById('submitRsvp');
+      const label = btn.textContent;
+      btn.innerHTML = '<span class="spinner spinner-sm"></span>Checking…'; btn.disabled = true;
+      found = await findExistingInviteByPhone(phoneDigits) || { phone: phoneDigits, guest: null };
+      btn.textContent = label; btn.disabled = false;
+      state.existingInvite = found;
+    }
+    if(found.guest){
+      showExistingInviteNotice(found);
+      showFormError("This number is already on our guest list — please use your existing invite above.", 'existingInvite');
+      return;
+    }
   }
 
   const sideRadio = document.querySelector('input[name="inviteSide"]:checked');
@@ -2002,6 +2123,12 @@ function renderAdmin(app){
   else renderSettingsAdmin(body);
 }
 
+function dupWarningHtml(){
+  const n = duplicatePhoneGroups().length;
+  if(!n) return '';
+  return `<div class="dup-warning"><strong>${n} phone number${n === 1 ? ' is' : 's are'} on the guest list more than once.</strong> The headcounts above may be counting some families twice — open <b>Guest list</b> and choose which entry to keep.</div>`;
+}
+
 function renderDashboard(body){
   const s = computeStats();
   body.innerHTML = `
@@ -2012,6 +2139,7 @@ function renderDashboard(body){
       <div class="stat"><span class="num">${s.respondedHouseholds} / ${s.totalHouseholds}</span><span class="lbl">Households responded</span></div>
       <div class="stat"><span class="num">${s.unmatched}</span><span class="lbl">Unmatched entries to review</span></div>
     </div>
+    ${dupWarningHtml()}
     <p class="helptext">Invited: ${s.invitedWedding} households to the Wedding, ${s.invitedReception} to the Reception, ${s.invitedBoth} to both.</p>
     <p class="helptext">Wedding food: ${s.weddingVeg} veg · ${s.weddingNonveg} non-veg &nbsp;|&nbsp; Reception food: ${s.receptionVeg} veg · ${s.receptionNonveg} non-veg</p>
     <p class="helptext">Wedding side: ${s.weddingGroomSide} groom's · ${s.weddingBrideSide} bride's &nbsp;|&nbsp; Reception side: ${s.receptionGroomSide} groom's · ${s.receptionBrideSide} bride's</p>
@@ -2072,6 +2200,7 @@ function exportCsv(){
 
 function renderGuestsAdmin(body){
   body.innerHTML = `
+    <div id="dupCardWrap"></div>
     <div class="card">
       <h3>Add a household</h3>
       <div class="row">
@@ -2126,6 +2255,8 @@ Priya, 9847099999, N, 0, Y, 1"></textarea>
     // can't be protected or reopened, so don't allow creating them.
     const phoneDigits = document.getElementById('gPhone').value.replace(/\D/g,'');
     if(phoneDigits.length !== 10){ errEl.textContent = 'Enter a valid 10-digit phone number — guests need it to open and edit their RSVP.'; return; }
+    const clash = guestWithPhone(phoneDigits, null);
+    if(clash){ errEl.textContent = `That number is already on the list for "${clash.name}". Each number should have one invite — edit that household instead.`; return; }
     errEl.textContent = '';
     const guest = {
       id: newId(),
@@ -2224,6 +2355,7 @@ Priya, 9847099999, N, 0, Y, 1"></textarea>
 function renderGuestTable(){
   const tbody = document.getElementById('guestTableBody');
   if(!tbody) return;
+  renderDuplicatesCard();
   tbody.innerHTML = state.guestList.map(g => {
     const r = state.responses[g.id];
     if(state.editingGuestId === g.id){
@@ -2292,6 +2424,8 @@ function renderGuestTable(){
       // Same rule as adding a guest: without a valid phone this record
       // can't be verified or reopened by the guest later.
       if(phoneDigits.length !== 10){ errEl.textContent = 'Enter a valid 10-digit phone number.'; return; }
+      const clash = guestWithPhone(phoneDigits, id);
+      if(clash){ errEl.textContent = `That number is already used by "${clash.name}" — each number should have one invite.`; return; }
 
       const before = {...g};
       g.name = name;
@@ -2368,6 +2502,133 @@ function renderGuestTable(){
   });
 
   bindMergePanelEvents();
+}
+
+// ---------- duplicate phone numbers: keep one entry per number ----------
+
+function rsvpSummaryText(r){
+  if(!r) return 'No RSVP yet';
+  if(!r.weddingAttending && !r.receptionAttending) return "RSVP: can't make it";
+  const parts = [];
+  if(r.weddingAttending) parts.push(`Wedding ${r.weddingCount}`);
+  if(r.receptionAttending) parts.push(`Reception ${r.receptionCount}`);
+  return 'RSVP: ' + parts.join(' · ');
+}
+function rsvpWhenText(r){
+  if(!r || !r.respondedAt) return '';
+  const d = new Date(r.respondedAt);
+  return isNaN(d) ? '' : ' · ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function renderDuplicatesCard(){
+  const wrap = document.getElementById('dupCardWrap');
+  if(!wrap) return;
+  const groups = duplicatePhoneGroups();
+  if(!groups.length){ wrap.innerHTML = ''; return; }
+  wrap.innerHTML = `
+    <div class="card dup-card">
+      <h3>Possible duplicates (${groups.length})</h3>
+      <p class="helptext" style="margin-top:0">These numbers are on the list more than once. Each number should have one invite, so choose the entry to keep. The others are removed, and their invitations and RSVPs are combined into the one you keep — so a Wedding reply on one entry and a Reception reply on another both carry over. If two entries answered for the same event, the one you keep wins.</p>
+      ${groups.map(grp => `
+        <div class="dup-group">
+          <div class="dup-phone">${escapeHtml(grp.phone)}</div>
+          ${grp.guests.map(g => {
+            const r = state.responses[g.id];
+            const invited = [g.weddingInvited ? 'Wedding' : '', g.receptionInvited ? 'Reception' : ''].filter(Boolean).join(' + ') || 'No events';
+            return `<div class="dup-entry">
+              <div class="dup-info">
+                <strong>${escapeHtml(g.name)}</strong>${g.unmatched ? ' <span class="badge pending">unmatched</span>' : ''}
+                <div class="dup-meta">Invited: ${invited} · ${escapeHtml(rsvpSummaryText(r))}${escapeHtml(rsvpWhenText(r))}</div>
+              </div>
+              <button class="btn secondary small" data-dupkeep="${g.id}" data-dupphone="${grp.phone}">Keep this one</button>
+            </div>`;
+          }).join('')}
+        </div>`).join('')}
+      <div id="dupError" class="form-error"></div>
+    </div>`;
+  wrap.querySelectorAll('[data-dupkeep]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const grp = duplicatePhoneGroups().find(x => x.phone === btn.dataset.dupphone);
+      if(!grp) return;
+      const keepId = btn.dataset.dupkeep;
+      const others = grp.guests.filter(g => g.id !== keepId);
+      if(btn.dataset.confirming !== 'true'){
+        btn.dataset.confirming = 'true';
+        btn.textContent = 'Tap again to remove ' + others.map(g => g.name).join(', ');
+        setTimeout(() => {
+          if(btn.isConnected && btn.dataset.confirming === 'true'){ btn.dataset.confirming = 'false'; btn.textContent = 'Keep this one'; }
+        }, 5000);
+        return;
+      }
+      wrap.querySelectorAll('[data-dupkeep]').forEach(b => b.disabled = true);
+      mergeDuplicateGroup(keepId, others.map(g => g.id));
+    });
+  });
+}
+
+function combineDuplicateResponses(keep, others){
+  const newestFirst = (a, b) => String((state.responses[b.id] || {}).respondedAt || '').localeCompare(String((state.responses[a.id] || {}).respondedAt || ''));
+  const ordered = [keep, ...others.slice().sort(newestFirst)].filter(g => state.responses[g.id]);
+  if(!ordered.length) return null;
+  const pick = ev => ordered.find(g => g[ev + 'Invited'])
+    || ordered.find(g => state.responses[g.id][ev + 'Attending'])
+    || ordered[0];
+  const w = state.responses[pick('wedding').id];
+  const r = state.responses[pick('reception').id];
+  const base = state.responses[ordered[0].id];
+  const latest = ordered.map(g => String(state.responses[g.id].respondedAt || '')).sort().pop();
+  return {
+    ...base, id: keep.id,
+    weddingAttending: !!w.weddingAttending, weddingCount: w.weddingAttending ? (w.weddingCount || 0) : 0,
+    weddingAttendees: w.weddingAttending ? (w.weddingAttendees || []) : [],
+    receptionAttending: !!r.receptionAttending, receptionCount: r.receptionAttending ? (r.receptionCount || 0) : 0,
+    receptionAttendees: r.receptionAttending ? (r.receptionAttendees || []) : [],
+    respondedAt: latest || base.respondedAt || new Date().toISOString()
+  };
+}
+
+async function mergeDuplicateGroup(keepId, otherIds){
+  const keep = state.guestList.find(g => g.id === keepId);
+  const others = otherIds.map(id => state.guestList.find(g => g.id === id)).filter(Boolean);
+  if(!keep || !others.length) return;
+
+  // Combine the RSVPs event by event (before invite flags change below), so
+  // a Wedding reply on one entry and a Reception reply on another both
+  // survive. For each event the answer comes from the kept entry if it was
+  // invited to that event, otherwise from the most recent entry that was.
+  const movedResponse = combineDuplicateResponses(keep, others);
+  // The kept entry is invited to everything any of the duplicates were.
+  others.forEach(g => {
+    const r = state.responses[g.id];
+    keep.weddingInvited = !!(keep.weddingInvited || g.weddingInvited || (r && r.weddingAttending));
+    keep.receptionInvited = !!(keep.receptionInvited || g.receptionInvited || (r && r.receptionAttending));
+    keep.weddingDefaultCount = Math.max(keep.weddingDefaultCount || 0, g.weddingDefaultCount || 0);
+    keep.receptionDefaultCount = Math.max(keep.receptionDefaultCount || 0, g.receptionDefaultCount || 0);
+  });
+  if(movedResponse){
+    keep.weddingInvited = keep.weddingInvited || !!movedResponse.weddingAttending;
+    keep.receptionInvited = keep.receptionInvited || !!movedResponse.receptionAttending;
+  }
+  keep.unmatched = false;
+
+  const removedResponses = others.filter(g => state.responses[g.id]).map(g => g.id);
+  if(movedResponse) state.responses[keepId] = movedResponse;
+  others.forEach(g => delete state.responses[g.id]);
+  state.guestList = state.guestList.filter(g => !otherIds.includes(g.id));
+  renderGuestTable();
+
+  try{
+    if(movedResponse) await withRetry(() => apiPost({ action: 'upsertResponse', response: movedResponse, passcode: state.adminPasscode }));
+    await withRetry(() => apiPost({ action: 'upsertGuest', guest: keep, passcode: state.adminPasscode }));
+    for(const id of removedResponses) await withRetry(() => apiPost({ action: 'deleteResponse', id, passcode: state.adminPasscode }));
+    for(const id of otherIds) await withRetry(() => apiPost({ action: 'deleteGuest', id, passcode: state.adminPasscode }));
+  }catch(err){
+    console.error('Duplicate merge failed partway through:', err);
+    await loadAdminData();
+    renderGuestTable();
+    const errEl = document.getElementById('dupError') || document.getElementById('guestTableError');
+    if(errEl) errEl.textContent = 'That only partly completed — the list has been refreshed from the sheet. Please check these entries and try again.';
+  }
 }
 
 // ---------- unmatched-entry resolution: merge into an existing guest ----------
